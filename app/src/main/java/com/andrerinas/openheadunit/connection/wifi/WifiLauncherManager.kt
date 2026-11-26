@@ -56,6 +56,9 @@ open class WifiLauncherManager(val service: AapService) {
      * only by a bring-up the user asks for, and dies with the service rather than persisting.
      */
     var cancelledByUser: Boolean = false
+
+    /** When the status pill's X was last pressed ([android.os.SystemClock.elapsedRealtime]). */
+    @Volatile var cancelledAtMs: Long = 0L
         private set
 
 
@@ -244,6 +247,7 @@ open class WifiLauncherManager(val service: AapService) {
     fun stopForUser() {
         service.releaseParkedHct()
         cancelledByUser = true
+        cancelledAtMs = android.os.SystemClock.elapsedRealtime()
         active?.noteUserExit()
         stop(WifiLauncherStopSequence.LAST)
     }

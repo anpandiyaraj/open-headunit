@@ -76,8 +76,12 @@ class BootCompleteReceiver : BroadcastReceiver() {
             AppLog.i("Boot auto-start: WiFi auto-start enabled, starting AapService to listen for WiFi (trigger=$action)")
             val serviceIntent = Intent(context, AapService::class.java)
             startService(context, serviceIntent, action)
-        } else if (!floatingButtonEnabled) {
-            AppLog.i("Boot auto-start: disabled, skipping")
+        } else {
+            // Always start AapService quietly on boot/ACC-on so the background Bluetooth HID
+            // watcher stays alive to auto-connect paired phones and raise AA when in range.
+            AppLog.i("Boot auto-start: starting AapService quietly in background for Bluetooth watcher (trigger=$action)")
+            val serviceIntent = Intent(context, AapService::class.java)
+            startService(context, serviceIntent, action)
         }
     }
 

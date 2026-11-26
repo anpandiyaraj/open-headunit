@@ -2131,8 +2131,10 @@ class AapProjectionActivity : SurfaceActivity(), IProjectionView.Callbacks, Vide
                     height = width / 0.418f
                 }
 
+                pipAspect = android.util.Rational(width.toInt(), height.toInt())
                 val paramsBuilder = android.app.PictureInPictureParams.Builder()
-                    .setAspectRatio(android.util.Rational(width.toInt(), height.toInt()))
+                    .setAspectRatio(pipAspect)
+                    .setActions(buildPipActions(AapService.pipPlaybackIsPlaying))
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     // Smooth transition for Android 12+
@@ -2181,15 +2183,72 @@ class AapProjectionActivity : SurfaceActivity(), IProjectionView.Callbacks, Vide
         startActivity(startMain)
     }
 
+    private var pipAspect: android.util.Rational? = null
+    private var pipReceiver: BroadcastReceiver? = null
+
+    @android.annotation.SuppressLint("NewApi")
+    private fun buildPipActions(playing: Boolean): List<android.app.RemoteAction> {
+        fun action(icon: Int, title: String, code: Int): android.app.RemoteAction {
+            val pi = android.app.PendingIntent.getBroadcast(
+                this, code,
+                Intent(PIP_MEDIA_ACTION).setPackage(packageName).putExtra(PIP_MEDIA_KEY, code),
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            return android.app.RemoteAction(android.graphics.drawable.Icon.createWithResource(this, icon), title, title, pi)
+        }
+        return listOf(
+            action(android.R.drawable.ic_media_previous, "Previous", android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS),
+            // Shows what a tap does: pause while playing, play while paused.
+            if (playing) action(android.R.drawable.ic_media_pause, "Pause", android.view.KeyEvent.KEYCODE_MEDIA_PAUSE)
+            else action(android.R.drawable.ic_media_play, "Play", android.view.KeyEvent.KEYCODE_MEDIA_PLAY),
+            action(android.R.drawable.ic_media_next, "Next", android.view.KeyEvent.KEYCODE_MEDIA_NEXT),
+        )
+    }
+
+    private fun refreshPipActions(playing: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !App.isPiPActive) return
+        try {
+            val b = android.app.PictureInPictureParams.Builder().setActions(buildPipActions(playing))
+            pipAspect?.let { b.setAspectRatio(it) }
+            setPictureInPictureParams(b.build())
+        } catch (e: Exception) {
+            AppLog.w("PiP: could not update controls: ${e.message}")
+        }
+    }
+
+    private fun startPipControls() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || pipReceiver != null) return
+        val r = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val code = intent?.getIntExtra(PIP_MEDIA_KEY, -1) ?: -1
+                if (code <= 0) return
+                commManager.sendKey(code, true, null, "pip-control")
+                commManager.sendKey(code, false, null, "pip-control")
+            }
+        }
+        pipReceiver = r
+        ContextCompat.registerReceiver(this, r, IntentFilter(PIP_MEDIA_ACTION), ContextCompat.RECEIVER_NOT_EXPORTED)
+        AapService.pipPlaybackListener = { playing -> runOnUiThread { refreshPipActions(playing) } }
+        refreshPipActions(AapService.pipPlaybackIsPlaying)
+    }
+
+    private fun stopPipControls() {
+        AapService.pipPlaybackListener = null
+        pipReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
+        pipReceiver = null
+    }
+
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         App.isPiPActive = isInPictureInPictureMode
         if (isInPictureInPictureMode) {
+            startPipControls()
             // Hide UI elements during PiP (like FPS counter, loading overlay)
             findViewById<View>(R.id.loading_overlay)?.visibility = View.GONE
             stopCustomLoadingMedia()
             performanceOverlay.setVisible(false)
         } else {
+            stopPipControls()
             // Restore UI if needed
             performanceOverlay.setVisible(settings.showPerformanceOverlay)
             setFullscreen()
@@ -3008,6 +3067,7 @@ class AapProjectionActivity : SurfaceActivity(), IProjectionView.Callbacks, Vide
         performanceOverlay.release()
         AppLog.i("AapProjectionActivity.onDestroy called. isFinishing=$isFinishing")
         App.isPiPActive = false
+        stopPipControls()
         // On a singleTask relaunch the new instance's onCreate runs before this old instance's
         // onDestroy, so it has already registered its own view callback and decoder listeners.
         // Deregister only what still belongs to this instance, or the teardown of the old
@@ -3022,6 +3082,8 @@ class AapProjectionActivity : SurfaceActivity(), IProjectionView.Callbacks, Vide
     }
 
     companion object {
+        private const val PIP_MEDIA_ACTION = "com.andrerinas.openheadunit.PIP_MEDIA"
+        private const val PIP_MEDIA_KEY = "keycode"
         /** Long enough for a surface callback to arrive first on a return, short enough to beat the stall window. */
         private const val RETURN_REARM_DELAY_MS = 300L
         /** Shortest gap between two "Locked" hints. */

@@ -4,6 +4,7 @@ import com.andrerinas.openheadunit.connection.wifi.scan.WifiScanControl
 import com.andrerinas.openheadunit.connection.SettingsRestartRecovery
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.ActivityOptions
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
@@ -24,6 +25,7 @@ import android.net.NetworkRequest
 import android.os.BatteryManager
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
@@ -190,6 +192,7 @@ class AapService : Service() {
     private val usbLauncherManager = UsbLauncherManager(this)
     private val selfLauncherManager = SelfLauncherManager(this, wifiLauncherManager)
     private val carKeysManager by lazy { App.provide(this).carKeysManager }
+    private val btHidMouseTrigger get() = App.get(this).bluetoothWatcher
 
     /**
      * Set when a link-loss teardown closed the session because station WiFi was going away.
@@ -587,6 +590,8 @@ class AapService : Service() {
         val isPlayingFromStatus = resolveIsPlayingFromStatus(status)
         lastAaPlaybackIsPlaying = isPlayingFromStatus
         mediaSessionIsPlaying = isPlayingFromStatus
+        pipPlaybackIsPlaying = isPlayingFromStatus
+        pipPlaybackListener?.invoke(isPlayingFromStatus)
 
         if (!shouldSyncAaMediaMetadata()) return
         updateMediaSessionState(isPlayingFromStatus)
@@ -1308,6 +1313,7 @@ class AapService : Service() {
         }
         scheduleBootLoopStrikeClear()
         registerNetworkMonitor()
+        btHidMouseTrigger.start()
         FloatingButtonManager.update(this)
     }
 
@@ -1408,12 +1414,15 @@ class AapService : Service() {
                     selfLauncherManager.onConnectionEstablished()
                 }
                 when (state) {
-                    is CommManager.ConnectionState.Connecting ->
+                    is CommManager.ConnectionState.Connecting -> {
+                        btHidMouseTrigger.onAaConnectionChanged(true)
                         emitSessionState(SessionStateIntent.STATE_CONNECTING)
+                    }
                     is CommManager.ConnectionState.Connected -> {
                         // Connection resources are already active before projection has a surface.
                         // Record this boundary so an early handshake cancellation cleans them up.
                         hasEverConnected = true
+                        btHidMouseTrigger.onAaConnectionChanged(true)
                         emitSessionState(SessionStateIntent.STATE_CONNECTED)
                         onConnected()
                     }
@@ -1462,6 +1471,7 @@ class AapService : Service() {
                         // count failures where they happen (CommManager.onUsbHandshakeEnded).
                     }
                     is CommManager.ConnectionState.Disconnected -> {
+                        btHidMouseTrigger.onAaConnectionChanged(false)
                         selfLauncherManager.onConnectionEnded(state)
                         if (hasEverConnected || state.hadPhysicalConnection) {
                             hasEverConnected = true
@@ -3592,6 +3602,9 @@ class AapService : Service() {
             externalPowerEndReached = false
         }
         stationScanMonitor.stop(this)
+        if (destroyIsUserStop) {
+            btHidMouseTrigger.stop()
+        }
         try { carKeysManager.unregisterAll() } catch (e: Exception) { AppLog.w("AapService: Error unregistering carKeysManager: ${e.message}") }
         try { wifiAutoStartReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) {}
         try {
@@ -3865,10 +3878,12 @@ class AapService : Service() {
                         // arriving during teardown must not cancel this deferred stop.
                         if (!isDestroying && wifiLauncherManager.isCleanupCurrent(cleanupTicket)) {
                             wifiLauncherManager.stopForUser()
+                            btHidMouseTrigger.noteUserCancelledAa()
                         }
                     }
                 } else {
                     wifiLauncherManager.stopForUser()
+                    btHidMouseTrigger.noteUserCancelledAa()
                 }
             }
             ACTION_ROTATE_WIFI_DIRECT_IDENTITY -> rotateWifiDirectIdentity()
@@ -4073,6 +4088,25 @@ class AapService : Service() {
                 }
             }
             ACTION_BT_AUTO_START          -> {
+                val uiHeld = intent?.getBooleanExtra(EXTRA_UI_HELD, false) == true
+                if (!uiHeld) {
+                    bringAppToFrontForConnection("ACTION_BT_AUTO_START")
+                }
+                // The user cancelled Android Auto while no phone was around. Once a target phone
+                // connects over Bluetooth (HID keypad or regular ACL), lift the AA cancel so it
+                // connects automatically — unless AA is already connected or connecting.
+                val sessionUpBeforeLift = commManager.isConnected ||
+                    commManager.connectionState.value is CommManager.ConnectionState.Connecting
+                if (com.andrerinas.openheadunit.connection.bluetooth.BtHidKeypadPolicy.shouldLiftAaCancelOnBtArrival(
+                        cancelledByUser = wifiLauncherManager.cancelledByUser,
+                        aaSessionUp = sessionUpBeforeLift,
+                        phoneWasDisconnectedSinceCancel = btHidMouseTrigger.sawTargetAbsent,
+                        elapsedSinceCancelMs = SystemClock.elapsedRealtime() - wifiLauncherManager.cancelledAtMs,
+                        graceMs = CANCEL_ARRIVAL_GRACE_MS,
+                    )
+                ) {
+                    wifiLauncherManager.liftUserCancel("target phone Bluetooth connected after AA cancel")
+                }
                 // A Native mode stopped by a user exit stays dead unless something re-arms it, but
                 // a re-arm recreates the network and costs the phone its saved profile. So Native is
                 // forced only when it cannot accept at all. The rule is on BtAutoStartRearmPolicy;
@@ -4125,6 +4159,9 @@ class AapService : Service() {
                         "re-arming when it closes.")
                 } else if (actions.forceRearmWireless) {
                     wifiLauncherManager.setActiveFromSettings(force = true)
+                    if (settings.wifiConnectionMode == WifiLauncherMode.AUTO) {
+                        wifiLauncherManager.startDiscovery(oneShot = false)
+                    }
                 } else if (networkComingUp == true) {
                     // Nothing to do and nothing safe to do: the network this arrival would rebuild
                     // is the one already being asked for, and tearing it down starts a second
@@ -4132,12 +4169,23 @@ class AapService : Service() {
                     AppLog.i("AapService: Bluetooth auto-start: the Native AA group is still being created, so it is left to answer.")
                 } else if (actions.armWirelessIfIdle) {
                     wifiLauncherManager.setActiveFromSettings()
-                } else if (settings.wifiConnectionMode == WifiLauncherMode.NATIVE && !sessionUp && attemptInFlight != true) {
-                    // Armed with a live group, so the phone dials RFCOMM itself. Re-read the
-                    // credentials rather than remake the group; that also catches a group that died.
-                    // Skipped while an attempt is in flight, because that ACL is our own poke's.
-                    AppLog.i("AapService: Bluetooth auto-start: Native AA is armed with a live group, leaving it alone.")
-                    launcher?.triggerWifiDirectRefresh()
+                    if (settings.wifiConnectionMode == WifiLauncherMode.AUTO) {
+                        wifiLauncherManager.startDiscovery(oneShot = false)
+                    }
+                } else if (!sessionUp && settings.showsWifi()) {
+                    when (settings.wifiConnectionMode) {
+                        WifiLauncherMode.NATIVE -> if (attemptInFlight != true) {
+                            // Armed with a live group, so the phone dials RFCOMM itself. Re-read the
+                            // credentials rather than remake the group; that also catches a group that died.
+                            AppLog.i("AapService: Bluetooth auto-start: Native AA is armed with a live group, refreshing credentials.")
+                            launcher?.triggerWifiDirectRefresh()
+                        }
+                        WifiLauncherMode.AUTO, WifiLauncherMode.HELPER -> {
+                            AppLog.i("AapService: Bluetooth auto-start: kicking wireless discovery for newly connected phone.")
+                            wifiLauncherManager.restartDiscovery()
+                        }
+                        WifiLauncherMode.MANUAL -> {}
+                    }
                 }
             }
             ACTION_NEARBY_CONNECT         -> {
@@ -4315,6 +4363,103 @@ class AapService : Service() {
         launchMainActivityOnBoot()
     }
 
+    /**
+     * A target phone's Bluetooth address came up (regular ACL, persistent HID dummy keypad, or FYT
+     * hands-free link). Callers may run on background threads, so foreground bring-up and service
+     * dispatch always hop to `Looper.getMainLooper()`.
+     */
+    fun onTargetBluetoothAddressConnected(address: String, name: String?, reason: String) {
+        val appSettings = App.provide(this).settings
+        val autoStartMacs = Settings.getAutoStartBtMacs(this)
+        val candidates = com.andrerinas.openheadunit.utils.BluetoothHelper.driverCandidates(
+            this,
+            appSettings.nativePhonesList,
+            appSettings.nativeProvenPhones
+        )
+        val targets = com.andrerinas.openheadunit.connection.bluetooth.BtHidKeypadPolicy.selectTargetAddresses(
+            configuredAutoStartMacs = autoStartMacs,
+            configuredNativeMacs = appSettings.nativePhonesList,
+            provenNativeMacs = appSettings.nativeProvenPhones,
+            candidatePhoneMacs = candidates.offered.map { it.address },
+        )
+        val normalized = address.trim().uppercase()
+        val fyt = com.andrerinas.openheadunit.connection.carkey.fyt.FytCallScreen.isFytUnit(this)
+        val matched = targets.contains(normalized) || (autoStartMacs.isEmpty() && fyt)
+        if (!matched) {
+            AppLog.d("AapService: ignoring Bluetooth arrival $address ($reason): not a target phone")
+            return
+        }
+        AppLog.i("AapService: target Bluetooth arrival ${name ?: address} ($reason)")
+        Handler(Looper.getMainLooper()).post {
+            bringAppToFrontForConnection(reason)
+            try {
+                ContextCompat.startForegroundService(
+                    this,
+                    Intent(this, AapService::class.java)
+                        .setAction(ACTION_BT_AUTO_START)
+                        .putExtra(EXTRA_UI_HELD, SettingsActivity.isVisible)
+                )
+            } catch (e: Exception) {
+                AppLog.w("AapService: could not dispatch Bluetooth auto-start: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Brings OpenHeadunit to the foreground whenever a target phone's Bluetooth connects and the
+     * app is currently minimized/backgrounded — regardless of whether Android Auto is already
+     * connected (`AapProjectionActivity`) or waiting to connect (`MainActivity`).
+     *
+     * Must run on `Looper.getMainLooper()`.
+     */
+    fun bringAppToFrontForConnection(reason: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            Handler(Looper.getMainLooper()).post { bringAppToFrontForConnection(reason) }
+            return
+        }
+        if (App.isPiPActive || SettingsActivity.isVisible || App.hasStartedActivity) {
+            return
+        }
+        if (commManager.isConnected) {
+            AppLog.i("AapService: bringing active projection to front ($reason)")
+            launchAapProjectionActivity(allowNotificationFallback = true)
+            return
+        }
+
+        AppLog.i("AapService: bringing MainActivity to front for Bluetooth connection ($reason)")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            launchDirectly()
+            return
+        }
+        if (AppPermissions.isOverlayGranted(this) && launchViaOverlayTrampoline()) {
+            return
+        }
+        // Direct startActivity on Android 10+ can be silently dropped by BAL without throwing,
+        // so never return early here — always fall through to the full-screen intent fallback.
+        try {
+            val launchIntent = Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                putExtra(MainActivity.EXTRA_LAUNCH_SOURCE, MainActivity.LAUNCH_SOURCE_BLUETOOTH)
+            }
+            startActivityWithBalAllowed(launchIntent)
+        } catch (e: Exception) {
+            AppLog.w("AapService: direct startActivity fallback threw: ${e.message}")
+        }
+        launchViaFullScreenIntent()
+    }
+
+    private fun startActivityWithBalAllowed(intent: Intent) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val opts = ActivityOptions.makeBasic().apply {
+                pendingIntentBackgroundActivityStartMode =
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+            }
+            startActivity(intent, opts.toBundle())
+        } else {
+            startActivity(intent)
+        }
+    }
+
     private fun launchMainActivityOnBoot() {
         // Android < 10: no background activity start restrictions
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -4376,12 +4521,16 @@ class AapService : Service() {
             wm.addView(view, params)
             startActivity(launchIntent)
             AppLog.i("Overlay trampoline: startActivity succeeded")
+            // Keep the window up past the launch: the background-activity-launch check runs
+            // asynchronously and needs to still see a visible overlay.
+            Handler(Looper.getMainLooper()).postDelayed({
+                try { wm.removeView(view) } catch (_: Exception) {}
+            }, OVERLAY_TRAMPOLINE_LINGER_MS)
             true
         } catch (e: Exception) {
             AppLog.e("Overlay trampoline failed: ${e.message}")
-            false
-        } finally {
             try { wm.removeView(view) } catch (_: Exception) {}
+            false
         }
     }
 
@@ -4392,7 +4541,15 @@ class AapService : Service() {
         }
         val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or
             (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
-        val fullScreenPi = PendingIntent.getActivity(this, 200, launchIntent, piFlags)
+        val fullScreenPi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val opts = ActivityOptions.makeBasic().apply {
+                pendingIntentBackgroundActivityStartMode =
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+            }
+            PendingIntent.getActivity(this, 200, launchIntent, piFlags, opts.toBundle())
+        } else {
+            PendingIntent.getActivity(this, 200, launchIntent, piFlags)
+        }
 
         val notification = NotificationCompat.Builder(this, App.bootStartChannel)
             .setSmallIcon(R.drawable.ic_stat_aa)
@@ -4560,6 +4717,15 @@ class AapService : Service() {
         const val ACTION_START_SELF_MODE           = "com.andrerinas.openheadunit.ACTION_START_SELF_MODE"
         const val ACTION_STOP_SELF_MODE            = "com.andrerinas.openheadunit.ACTION_STOP_SELF_MODE"
         const val ACTION_START_WIRELESS            = "com.andrerinas.openheadunit.ACTION_START_WIRELESS"
+        private const val OVERLAY_TRAMPOLINE_LINGER_MS = 300L
+
+        /** A Bluetooth arrival sooner than this after the cancel is taken to be the cancelled attempt's own. */
+        private const val CANCEL_ARRIVAL_GRACE_MS = 15_000L
+
+        /** Last playing state reported by the phone, for the PiP controls. */
+        @Volatile var pipPlaybackIsPlaying = false
+        /** Set by the projection activity while in PiP; called on any thread. */
+        @Volatile var pipPlaybackListener: ((Boolean) -> Unit)? = null
         const val ACTION_BT_AUTO_START              = "com.andrerinas.openheadunit.ACTION_BT_AUTO_START"
         const val ACTION_START_WIRELESS_SCAN       = "com.andrerinas.openheadunit.ACTION_START_WIRELESS_SCAN"
         const val ACTION_STOP_WIRELESS             = "com.andrerinas.openheadunit.ACTION_STOP_WIRELESS"

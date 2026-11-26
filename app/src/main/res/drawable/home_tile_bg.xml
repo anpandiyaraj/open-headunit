@@ -4,12 +4,14 @@
         <shape android:shape="rectangle">
             <solid android:color="@color/home_tile_pressed" />
             <corners android:radius="@dimen/home_tile_radius" />
+            <stroke android:width="1dp" android:color="@color/home_tile_stroke" />
         </shape>
     </item>
     <item>
         <shape android:shape="rectangle">
             <solid android:color="@color/home_tile" />
             <corners android:radius="@dimen/home_tile_radius" />
+            <stroke android:width="1dp" android:color="@color/home_tile_stroke" />
         </shape>
     </item>
 </selector>

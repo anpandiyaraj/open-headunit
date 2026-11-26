@@ -3612,7 +3612,10 @@ class NativeAaHandshakeManager(
             mayServeHandshake = { NativeHandoffPolicy.shouldServeHandshake(consecutiveHandshakeFailures) },
             onPhoneEvidence = { resetHandshakeBackoff() },
             onRefusalChanged = { refusal -> onBlinkRefusalChanged(refusal) },
-            stockClient = { StockCarLink.state(context.packageManager) }
+            stockClient = { StockCarLink.state(context.packageManager) },
+            onPhoneLinked = { address ->
+                context.onTargetBluetoothAddressConnected(address, null, "FYT module hands-free link")
+            }
         )
         moduleCarrier = carrier
         scope.launch(Dispatchers.IO + CoroutineName("NativeAa-BlinkCarrier")) {

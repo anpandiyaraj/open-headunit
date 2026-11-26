@@ -19,6 +19,7 @@ import android.os.Bundle
 import androidx.core.content.ContextCompat
 import androidx.multidex.MultiDex
 import com.andrerinas.openheadunit.main.BackgroundNotification
+import com.google.android.material.color.DynamicColors
 import com.andrerinas.openheadunit.aap.AapNavigation
 import com.andrerinas.openheadunit.connection.usb.UsbPermissionAsks
 import com.andrerinas.openheadunit.ssl.ConscryptInitializer
@@ -47,6 +48,13 @@ class App : Application(), Application.ActivityLifecycleCallbacks {
         super.onCreate()
         instance = this
         registerActivityLifecycleCallbacks(this)
+
+        // Material You: wallpaper-derived colors on Android 12+, a no-op elsewhere.
+        try {
+            DynamicColors.applyToActivitiesIfAvailable(this)
+        } catch (e: Exception) {
+            AppLog.w("App", "Dynamic colors unavailable", e)
+        }
 
         try {
             val packageReceiver = object : BroadcastReceiver() {
@@ -169,6 +177,38 @@ class App : Application(), Application.ActivityLifecycleCallbacks {
                 OemAppManager.runAutoKillIfEnabled(this@App)
             }
         }
+
+        // Start the backgroundBluetooth HID dummy keypad watcher at Application startup so paired
+        // target phones are monitored continuously even while the app is minimized/backgrounded
+        // and before any UI button is pressed.
+        bluetoothWatcher.start()
+    }
+
+    val bluetoothWatcher: com.andrerinas.openheadunit.connection.bluetooth.BtHidMouseTrigger by lazy {
+        com.andrerinas.openheadunit.connection.bluetooth.BtHidMouseTrigger(
+            context = this,
+            settings = component.settings,
+            isAaSessionUp = {
+                component.commManager.isConnected ||
+                    component.commManager.connectionState.value is com.andrerinas.openheadunit.connection.CommManager.ConnectionState.Connecting
+            },
+            onTargetPhoneConnected = { address, name, reason ->
+                val svc = com.andrerinas.openheadunit.aap.AapService.instance
+                if (svc != null) {
+                    svc.onTargetBluetoothAddressConnected(address, name, reason)
+                } else {
+                    try {
+                        ContextCompat.startForegroundService(
+                            this,
+                            Intent(this, com.andrerinas.openheadunit.aap.AapService::class.java)
+                                .setAction(com.andrerinas.openheadunit.aap.AapService.ACTION_BT_AUTO_START)
+                        )
+                    } catch (e: Exception) {
+                        AppLog.w("App", "Could not start AapService on Bluetooth keypad connect: ${e.message}")
+                    }
+                }
+            }
+        )
     }
 
     private var unlockedInitDone = false

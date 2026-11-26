@@ -329,12 +329,12 @@ object HomeUiHelper {
             label?.setTextColor(palette.text)
         } else {
             val radius = context.resources.getDimension(R.dimen.home_tile_radius)
-            val dash = dp(context, 8).toFloat()
-            val gap = dp(context, 6).toFloat()
+            val dash = 0f
+            val gap = 0f
             slot.background = pressable(
                 palette.ripple,
-                { shape(palette.panel, radius, palette.slotStroke, dp(context, 2), dash, gap) },
-                { shape(palette.tilePressed, radius, palette.slotStroke, dp(context, 2), dash, gap) }
+                { shape(palette.panel, radius, palette.slotStroke, dp(context, 1), dash, gap) },
+                { shape(palette.tilePressed, radius, palette.slotStroke, dp(context, 1), dash, gap) }
             )
             icon?.setColorFilter(palette.textMuted, PorterDuff.Mode.SRC_IN)
             icon?.alpha = 1f

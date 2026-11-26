@@ -44,6 +44,8 @@ class BlinkAaCarrier(
     private val openRoot: (onLine: (String) -> Unit, onEnded: (String) -> Unit) -> BlinkAutoSerialChannel =
         { onLine, onEnded -> BlinkAutoSerialChannel.open(onLine, onEnded) },
     private val now: () -> Long = { System.currentTimeMillis() },
+    /** Called on the reader thread with the phone's address when the hands-free link comes up. */
+    private val onPhoneLinked: (String) -> Unit = {},
 ) : ExternalModuleCarrier {
 
     companion object {
@@ -263,6 +265,9 @@ class BlinkAaCarrier(
             is BlinkAutoLine.Event.PhoneLinked -> {
                 phoneAddress = event.address
                 AppLog.i("NativeAA: [BLINK] hands-free link up to ${event.address}.")
+                try { onPhoneLinked(event.address) } catch (e: Exception) {
+                    AppLog.w("NativeAA: [BLINK] onPhoneLinked failed: ${e.message}")
+                }
             }
             BlinkAutoLine.Event.ChannelOpened -> {
                 AppLog.i("NativeAA: [BLINK] the phone opened the Android Auto channel.")
