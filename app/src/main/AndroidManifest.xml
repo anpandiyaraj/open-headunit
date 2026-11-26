@@ -476,6 +476,9 @@
                     android:host="connect"
                     android:scheme="headunit" />
                 <data
+                    android:host="wireless"
+                    android:scheme="headunit" />
+                <data
                     android:host="disconnect"
                     android:scheme="headunit" />
                 <data

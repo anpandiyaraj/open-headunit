@@ -129,7 +129,6 @@ class AutomationCommandPolicyTest {
             HeadUnitCommand.ACTION_DISCONNECT to AapService.ACTION_DISCONNECT,
             HeadUnitCommand.ACTION_STOP_WIRELESS to AapService.ACTION_STOP_WIRELESS,
             HeadUnitCommand.ACTION_CANCEL_WIRELESS to AapService.ACTION_CANCEL_WIRELESS,
-            HeadUnitCommand.ACTION_START_WIRELESS_SCAN to AapService.ACTION_START_WIRELESS_SCAN,
             HeadUnitCommand.ACTION_END_SESSION_STAY_ARMED to AapService.ACTION_END_SESSION_STAY_ARMED,
             HeadUnitCommand.ACTION_REFRESH_SENSORS to AapService.ACTION_REFRESH_SENSORS,
             HeadUnitCommand.ACTION_RESTART_AUDIO to AapService.ACTION_RESTART_AUDIO,
@@ -199,6 +198,36 @@ class AutomationCommandPolicyTest {
         ) as AutomationCommandPolicy.Effect.StartService
         assertEquals(AapService.ACTION_START_WIRELESS, wireless.action)
         assertEquals(true, wireless.flagExtras[AapService.EXTRA_NO_UI])
+
+        val wirelessScan = single(
+            HeadUnitCommand.ACTION_START_WIRELESS_SCAN,
+            mapOf(HeadUnitCommand.EXTRA_NO_UI to "true")
+        ) as AutomationCommandPolicy.Effect.StartService
+        assertEquals(AapService.ACTION_START_WIRELESS_SCAN, wirelessScan.action)
+        assertEquals(true, wirelessScan.flagExtras[AapService.EXTRA_BY_COMMAND])
+        assertEquals(true, wirelessScan.flagExtras[AapService.EXTRA_NO_UI])
+    }
+
+    @Test
+    fun `wireless scan and connect wireless=true carry by_command and default to raising the screen`() {
+        val scan = single(HeadUnitCommand.ACTION_START_WIRELESS_SCAN)
+            as AutomationCommandPolicy.Effect.StartService
+        assertEquals(AapService.ACTION_START_WIRELESS_SCAN, scan.action)
+        assertEquals(true, scan.flagExtras[AapService.EXTRA_BY_COMMAND])
+        assertEquals(false, scan.flagExtras[AapService.EXTRA_NO_UI])
+
+        val connectWireless = single(
+            HeadUnitCommand.ACTION_CONNECT,
+            mapOf(HeadUnitCommand.EXTRA_WIRELESS to "true")
+        ) as AutomationCommandPolicy.Effect.StartService
+        assertEquals(scan, connectWireless)
+
+        val connectWirelessNoUi = single(
+            HeadUnitCommand.ACTION_CONNECT,
+            mapOf(HeadUnitCommand.EXTRA_WIRELESS to "true", HeadUnitCommand.EXTRA_NO_UI to "true")
+        ) as AutomationCommandPolicy.Effect.StartService
+        assertEquals(true, connectWirelessNoUi.flagExtras[AapService.EXTRA_BY_COMMAND])
+        assertEquals(true, connectWirelessNoUi.flagExtras[AapService.EXTRA_NO_UI])
     }
 
     @Test

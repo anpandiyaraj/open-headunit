@@ -76,8 +76,13 @@ class WifiAutoStartReceiver : BroadcastReceiver() {
                     return
                 }
 
-                // Start the service
+                // Re-arm wireless scan via explicit command so even an already-running AapService
+                // wakes wireless discovery and brings MainActivity to the front via overlay trampoline.
+                val settingsVisible = SettingsActivity.isVisible
                 val serviceIntent = Intent(context, AapService::class.java)
+                    .setAction(AapService.ACTION_START_WIRELESS_SCAN)
+                    .putExtra(AapService.EXTRA_BY_COMMAND, true)
+                    .putExtra(AapService.EXTRA_NO_UI, settingsVisible)
                 try {
                     ContextCompat.startForegroundService(context, serviceIntent)
                 } catch (e: Exception) {
@@ -85,8 +90,16 @@ class WifiAutoStartReceiver : BroadcastReceiver() {
                 }
 
                 // The app is already open there, and raising the home screen would close settings.
-                if (SettingsActivity.isVisible) {
+                if (settingsVisible) {
                     AppLog.i("WifiAutoStartReceiver: the settings screen is on show, so the home screen is not raised.")
+                    return
+                }
+
+                // If overlay permission is granted on Android 10+, AapService raises MainActivity
+                // cleanly via the overlay trampoline without posting a duplicate heads-up notification.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                    com.andrerinas.openheadunit.utils.AppPermissions.isOverlayGranted(context)
+                ) {
                     return
                 }
 

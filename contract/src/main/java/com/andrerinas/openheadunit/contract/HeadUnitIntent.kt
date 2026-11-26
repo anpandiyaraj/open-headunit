@@ -254,7 +254,10 @@ object HeadUnitCommand {
     /** Target address for [ACTION_CONNECT]; without it the USB path is checked instead. */
     const val EXTRA_IP = "ip"
 
-    /** [ACTION_CONNECT] and [ACTION_START_SELF_MODE]: connect without raising the projection. */
+    /** [ACTION_CONNECT]: start wireless scan/bring-up instead of checking USB when no IP/MAC is given. */
+    const val EXTRA_WIRELESS = "wireless"
+
+    /** [ACTION_CONNECT], [ACTION_START_WIRELESS_SCAN] and [ACTION_START_SELF_MODE]: connect without raising the UI. */
     const val EXTRA_NO_UI = "no_ui"
 
     /** `day`, `night` or `auto` for [ACTION_SET_NIGHT_MODE]. */

@@ -128,7 +128,7 @@ class SettingsActivity : BaseActivity() {
 
         // Set the start destination to settingsFragment instead of homeFragment
         val navGraph = navController.navInflater.inflate(R.navigation.nav_graph)
-        navGraph.startDestination = R.id.settingsFragment
+        navGraph.setStartDestination(R.id.settingsFragment)
         navController.graph = navGraph
 
         // Open a specific sub-screen when requested (e.g. from the onboarding wizard),

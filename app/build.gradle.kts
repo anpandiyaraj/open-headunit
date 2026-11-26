@@ -301,9 +301,9 @@ dependencies {
     implementation("androidx.multidex:multidex:2.0.1")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
-    // Navigation Component
-    implementation("androidx.navigation:navigation-fragment-ktx:2.3.5")
-    implementation("androidx.navigation:navigation-ui-ktx:2.3.5")
+    // Navigation Component (2.5.3 keeps minSdk 14 while providing NavType$Companion.fromArgType for R8/D8 9.x)
+    implementation("androidx.navigation:navigation-fragment-ktx:2.5.3")
+    implementation("androidx.navigation:navigation-ui-ktx:2.5.3")
 
     // DexMaker for runtime subclassing (Hotspot Fix)
     implementation("com.linkedin.dexmaker:dexmaker:2.28.3")

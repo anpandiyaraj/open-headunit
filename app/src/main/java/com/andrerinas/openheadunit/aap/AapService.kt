@@ -3832,19 +3832,25 @@ class AapService : Service() {
             ACTION_START_WIRELESS_SCAN   -> {
                 val settings = App.provide(this).settings
                 val mode = settings.wifiConnectionMode
+                val byCommand = intent.getBooleanExtra(EXTRA_BY_COMMAND, false)
+                val noUi = intent.getBooleanExtra(EXTRA_NO_UI, false)
 
-                AppLog.i("AapService: Force-starting WIFI-Scan from UI")
+                AppLog.i("AapService: Force-starting WIFI-Scan (byCommand=$byCommand, noUi=$noUi)")
 
-                // [FIX] Reset exit flags on manual scan start
+                // [FIX] Reset exit flags on manual/command scan start
                 userExitedAA = false
                 userExitCooldownUntil = 0L
                 Settings.clearBootLoopState(this)
                 wifiLauncherManager.setActiveFromSettings(
-                    force = true, noInfoToasts = false, userRequested = true
+                    force = true, noInfoToasts = byCommand, userRequested = true
                 )
 
                 if (mode == WifiLauncherMode.AUTO)
                     wifiLauncherManager.startDiscovery(oneShot = true)
+
+                if (byCommand && !noUi) {
+                    bringAppToFrontForConnection("Automation wireless scan")
+                }
             }
             ACTION_STOP_WIRELESS         -> {
                 stopWirelessForCommand(intent?.getBooleanExtra(EXTRA_SETTINGS_REARM, false) == true)
