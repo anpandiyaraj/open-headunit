@@ -24,6 +24,14 @@ abstract class WifiLauncher(val manager: WifiLauncherManager) {
 
     abstract fun hasLocalDiscovery(): Boolean
 
+    /**
+     * Whether [WifiLauncherSharedServices] starts an automatic background subnet port sweep when
+     * this launcher becomes active. `Common Wifi (NSD)` registers the `_aawireless._tcp` NSD
+     * service ([hasLocalDiscovery] = true) without blindly sweeping all 254 hosts in the background
+     * so the user can choose a mobile device from the network list.
+     */
+    open fun autoStartsLocalDiscovery(): Boolean = hasLocalDiscovery()
+
     abstract fun start(noInfoToasts: Boolean)
 
     abstract fun stop(seq: WifiLauncherStopSequence)

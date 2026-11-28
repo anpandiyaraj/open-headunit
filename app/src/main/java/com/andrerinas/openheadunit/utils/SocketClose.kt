@@ -1,6 +1,7 @@
 package com.andrerinas.openheadunit.utils
 
 import java.io.IOException
+import java.net.DatagramSocket
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -11,4 +12,7 @@ inline fun <T> Socket.useSocket(block: (Socket) -> T): T =
     try { block(this) } finally { try { close() } catch (_: IOException) { } }
 
 inline fun <T> ServerSocket.useSocket(block: (ServerSocket) -> T): T =
+    try { block(this) } finally { try { close() } catch (_: IOException) { } }
+
+inline fun <T> DatagramSocket.useSocket(block: (DatagramSocket) -> T): T =
     try { block(this) } finally { try { close() } catch (_: IOException) { } }

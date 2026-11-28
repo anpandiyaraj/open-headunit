@@ -285,28 +285,35 @@
             android:layout_height="match_parent"
             android:orientation="vertical"
             android:gravity="center"
-            android:padding="16dp">
+            android:padding="24dp">
 
             <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
-                android:gravity="center_vertical">
+                android:gravity="center_vertical"
+                android:background="@drawable/bg_setting_single"
+                android:paddingStart="24dp"
+                android:paddingEnd="32dp"
+                android:paddingTop="20dp"
+                android:paddingBottom="20dp"
+                android:elevation="8dp">
 
                 <ProgressBar
-                    android:layout_width="32dp"
-                    android:layout_height="32dp"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
                     android:indeterminate="true"
-                    android:indeterminateTint="@android:color/white" />
+                    android:indeterminateTint="?android:attr/textColorPrimary" />
 
                 <TextView
                     android:id="@+id/auto_connect_loading_default_text"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="16dp"
+                    android:layout_marginStart="20dp"
                     android:text="@string/android_auto_starting"
-                    android:textColor="@android:color/white"
-                    android:textSize="27sp" />
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="22sp"
+                    android:textStyle="bold" />
             </LinearLayout>
         </LinearLayout>
 

@@ -1993,4 +1993,13 @@
     <string name="bg_color_green">Green</string>
     <string name="bg_color_blue">Blue</string>
     <string name="bg_color_hex_hint">Color (#RRGGBB)</string>
+    <string name="common_wifi_mobile_dialog_title">Select Mobile Device</string>
+    <string name="common_wifi_scanning_mobile">Scanning Wi-Fi network for mobile devices…</string>
+    <string name="common_wifi_found_mobile_count">Available mobile devices (%1$d)</string>
+    <string name="common_wifi_found_all_count">Network devices (%1$d)</string>
+    <string name="common_wifi_no_mobile_devices">No mobile devices found on this Wi-Fi network. Make sure your phone is connected to the same Wi-Fi network.</string>
+    <string name="common_wifi_rescan">Rescan</string>
+    <string name="common_wifi_show_all_devices">Show all network devices (%1$d)</string>
+    <string name="common_wifi_show_only_mobile">Show only mobile devices</string>
+    <string name="common_wifi_phone_no_listener">No Android Auto listener responded on %1$s (%2$s). On your phone, start \"Headunit server\" in Android Auto Developer settings, or open Wireless Helper (AA 17.3 or rooted).</string>
 </resources>

@@ -142,6 +142,8 @@ import com.andrerinas.openheadunit.utils.ScreenPower
 import com.andrerinas.openheadunit.utils.Settings
 import com.andrerinas.openheadunit.utils.VpnControl
 import com.andrerinas.openheadunit.utils.protoUint32ToLong
+import java.net.InetSocketAddress
+import java.net.Socket
 
 /**
  * Top-level foreground service that manages the Android Auto connection lifecycle.
@@ -2318,7 +2320,7 @@ class AapService : Service() {
             }
             // Only where a discovery loop exists: Native stays armed across a session end now, and
             // the line would otherwise announce a restart that is a no-op there.
-            if (wifiLauncherManager.active?.hasLocalDiscovery() == true) {
+            if (wifiLauncherManager.active?.autoStartsLocalDiscovery() == true) {
                 AppLog.i("AapService: Disconnected. Restarting discovery loop in 2s...")
                 automaticReconnect.schedule(state, 2000) {
                     wifiLauncherManager.restartDiscovery()
@@ -3159,6 +3161,152 @@ class AapService : Service() {
 
     private var sleepReplayJob: Job? = null
 
+    private var commonWifiConnectJob: Job? = null
+
+    private fun cancelCommonWifiTargetConnect() {
+        commonWifiConnectJob?.cancel()
+        commonWifiConnectJob = null
+        wifiLauncherManager.sharedServices.wirelessServer?.preferClient(null)
+    }
+
+    private fun connectCommonWifiMobileDevice(ip: String, deviceName: String) {
+        AppLog.i("AapService: Connecting to Common WiFi mobile device $deviceName ($ip)")
+        userExitedAA = false
+        userExitCooldownUntil = 0L
+        Settings.clearBootLoopState(this)
+        wifiLauncherManager.liftUserCancel("the user selected Common WiFi mobile device $deviceName ($ip)")
+
+        val active = wifiLauncherManager.active as? WifiLauncherHelper
+        val serverWasAlreadyListening = wifiLauncherManager.sharedServices.wirelessServer?.isListening == true
+        if (active == null || active.strategy != HelperStrategy.COMMON_WIFI || !wifiLauncherManager.activeIsStarted) {
+            val launcher = WifiLauncherHelper(wifiLauncherManager, HelperStrategy.COMMON_WIFI)
+            wifiLauncherManager.setActive(launcher, force = true, userRequested = true)
+        } else {
+            wifiLauncherManager.sharedServices.startWirelessServer(active)
+        }
+
+        wifiLauncherManager.sharedServices.wirelessServer?.preferClient(ip)
+        if (serverWasAlreadyListening) {
+            // Re-announce _aawireless._tcp NSD immediately so a phone running Wireless Helper sees us fresh.
+            wifiLauncherManager.sharedServices.wirelessServer?.refreshNsdRegistration()
+        }
+
+        try {
+            val saved = HashSet(settings.networkAddresses)
+            if (saved.add(ip)) {
+                settings.networkAddresses = saved
+            }
+        } catch (_: Exception) {
+        }
+
+        commonWifiConnectJob?.cancel()
+        commonWifiConnectJob = serviceScope.launch(Dispatchers.IO) {
+            ConnectionStageTracker.report(ConnectionStage.CONNECTING)
+
+            // Wait briefly for WirelessServer on 5288 + NSD to finish binding before waking the phone.
+            var waitedMs = 0L
+            while (isActive && waitedMs < 1500L && wifiLauncherManager.sharedServices.wirelessServer?.isListening != true) {
+                delay(100L)
+                waitedMs += 100L
+            }
+
+            val maxRounds = 4
+            var last5289Error: String? = null
+            var last5277Error: String? = null
+            for (round in 1..maxRounds) {
+                if (!isActive || commManager.isConnected || commManager.isBusy) return@launch
+
+                if (round == 3) {
+                    wifiLauncherManager.sharedServices.wirelessServer?.refreshNsdRegistration()
+                }
+
+                // 1. Wake Wireless Helper on TCP port 5289 (hold open 500ms so helper launches AA to dial our 5288 server).
+                val helperProbe = tryConnectPort(ip, 5289, timeoutMs = 800)
+                val helperSocket = helperProbe.first
+                last5289Error = helperProbe.second
+                if (helperSocket != null) {
+                    AppLog.i("AapService: Waking Wireless Helper on $deviceName ($ip:5289, round $round)")
+                    ConnectionStageTracker.report(ConnectionStage.PHONE_ANSWERED)
+                    try {
+                        delay(500L)
+                    } finally {
+                        try { helperSocket.close() } catch (_: Exception) {}
+                    }
+                    // Wait up to 8s for Wireless Helper / Android Auto on the phone to connect back to port 5288.
+                    var inboundWaitMs = 0L
+                    while (isActive && inboundWaitMs < 8000L && !commManager.isConnected && !commManager.isBusy) {
+                        delay(250L)
+                        inboundWaitMs += 250L
+                    }
+                    if (commManager.isConnected || commManager.isBusy) return@launch
+                } else {
+                    if (!isActive || commManager.isConnected || commManager.isBusy) return@launch
+                    // 2. Fallback: connect directly if Android Auto Headunit Server is listening on TCP port 5277.
+                    val serverProbe = tryConnectPort(ip, 5277, timeoutMs = 1000)
+                    val serverSocket = serverProbe.first
+                    last5277Error = serverProbe.second
+                    if (serverSocket != null) {
+                        AppLog.i("AapService: Connected to Headunit Server on $deviceName ($ip:5277)")
+                        ConnectionStageTracker.report(ConnectionStage.PHONE_ANSWERED)
+                        var handedOver = false
+                        try {
+                            commManager.connect(
+                                serverSocket,
+                                ConnectionPriorityPolicy.Tier.USER,
+                                restartEndpoint = ip to 5277
+                            )
+                            handedOver = true
+                        } finally {
+                            if (!handedOver) {
+                                try { serverSocket.close() } catch (_: Exception) {}
+                            }
+                        }
+                        return@launch
+                    }
+                    AppLog.i(
+                        "AapService: Common WiFi probe round $round/$maxRounds to $deviceName ($ip) — " +
+                            "5289=${last5289Error ?: "closed"}, 5277=${last5277Error ?: "closed"}; waiting for NSD callback on 5288"
+                    )
+                }
+
+                if (round < maxRounds && isActive && !commManager.isConnected && !commManager.isBusy) {
+                    var waitBetweenMs = 0L
+                    while (isActive && waitBetweenMs < 2500L && !commManager.isConnected && !commManager.isBusy) {
+                        delay(250L)
+                        waitBetweenMs += 250L
+                    }
+                }
+            }
+
+            if (isActive && !commManager.isConnected && !commManager.isBusy) {
+                wifiLauncherManager.sharedServices.wirelessServer?.preferClient(null)
+                ConnectionStageTracker.report(ConnectionStage.WAITING_FOR_PHONE)
+                AppLog.w(
+                    "AapService: No Android Auto listener responded on $deviceName ($ip) " +
+                        "(5289=${last5289Error ?: "no-reply"}, 5277=${last5277Error ?: "no-reply"}, no inbound 5288)."
+                )
+                withContext(Dispatchers.Main) {
+                    ToastUtils.showToast(
+                        this@AapService,
+                        getString(R.string.common_wifi_phone_no_listener, deviceName, ip),
+                        android.widget.Toast.LENGTH_LONG
+                    )
+                }
+            }
+        }
+    }
+
+    private fun tryConnectPort(ip: String, port: Int, timeoutMs: Int): Pair<Socket?, String?> {
+        val socket = Socket()
+        return try {
+            socket.connect(InetSocketAddress(ip, port), timeoutMs)
+            socket to null
+        } catch (e: Exception) {
+            try { socket.close() } catch (_: Exception) {}
+            null to "${e.javaClass.simpleName}${e.message?.let { ": $it" } ?: ""}"
+        }
+    }
+
     /** Re-arms a bring-up that [WirelessSleepHold] refused while the unit was asleep. */
     private fun replaySleepHold(trigger: String) {
         val held = WirelessSleepHold.take() ?: return
@@ -3853,9 +4001,11 @@ class AapService : Service() {
                 }
             }
             ACTION_STOP_WIRELESS         -> {
+                cancelCommonWifiTargetConnect()
                 stopWirelessForCommand(intent?.getBooleanExtra(EXTRA_SETTINGS_REARM, false) == true)
             }
             ACTION_CANCEL_WIRELESS       -> {
+                cancelCommonWifiTargetConnect()
                 commManager.cancelPendingSettingsRestart()
                 usbCheckPendingForSettings = false
                 bluetoothLaunchPendingForSettings = false
@@ -4219,7 +4369,15 @@ class AapService : Service() {
                     }
                 }
             }
+            ACTION_HELPER_COMMON_WIFI_CONNECT -> {
+                val ip = intent?.getStringExtra(EXTRA_TARGET_IP)?.trim()
+                val deviceName = intent?.getStringExtra(EXTRA_DEVICE_NAME).orEmpty().ifBlank { ip.orEmpty() }
+                if (!ip.isNullOrEmpty()) {
+                    connectCommonWifiMobileDevice(ip, deviceName)
+                }
+            }
             ACTION_DISCONNECT            -> {
+                cancelCommonWifiTargetConnect()
                 parkRetainedHct()
                 AppLog.i("Disconnect action received.")
                 userExitedAA = true
@@ -4744,6 +4902,7 @@ class AapService : Service() {
         const val ACTION_NATIVE_AA_PROMPT_SHOWN     = "com.andrerinas.openheadunit.ACTION_NATIVE_AA_PROMPT_SHOWN"
         const val ACTION_NATIVE_AA_PROMPT_DISMISSED = "com.andrerinas.openheadunit.ACTION_NATIVE_AA_PROMPT_DISMISSED"
         const val ACTION_NEARBY_CONNECT             = "com.andrerinas.openheadunit.ACTION_NEARBY_CONNECT"
+        const val ACTION_HELPER_COMMON_WIFI_CONNECT = "com.andrerinas.openheadunit.ACTION_HELPER_COMMON_WIFI_CONNECT"
         const val ACTION_CHECK_USB                 = "com.andrerinas.openheadunit.ACTION_CHECK_USB"
         const val ACTION_STOP_SERVICE              = "com.andrerinas.openheadunit.aap.action.STOP_SERVICE"
         const val ACTION_DISCONNECT                = "com.andrerinas.openheadunit.ACTION_DISCONNECT"
@@ -4841,5 +5000,6 @@ class AapService : Service() {
         const val EXTRA_DEVICE_NAME = "extra_device_name"
         const val EXTRA_BY_COMMAND = "extra_by_command"
         const val EXTRA_ENDPOINT_ID = "extra_endpoint_id"
+        const val EXTRA_TARGET_IP = "extra_target_ip"
     }
 }

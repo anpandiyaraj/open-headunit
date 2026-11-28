@@ -79,6 +79,10 @@ import com.andrerinas.openheadunit.connection.usb.UsbAccessoryMode
 import com.andrerinas.openheadunit.connection.usb.UsbPermissionAskPolicy
 import com.andrerinas.openheadunit.connection.usb.UsbPermissionAsks
 import com.andrerinas.openheadunit.connection.wifi.modes.helper.HelperStrategy
+import com.andrerinas.openheadunit.connection.wifi.modes.helper.networkscan.CommonWifiDevicePolicy
+import com.andrerinas.openheadunit.connection.wifi.modes.helper.networkscan.CommonWifiDeviceScanner
+import com.andrerinas.openheadunit.connection.wifi.modes.helper.networkscan.DeviceType
+import com.andrerinas.openheadunit.connection.wifi.modes.helper.networkscan.NetworkDevice
 import com.andrerinas.openheadunit.connection.wifi.WifiLauncherMode
 import com.andrerinas.openheadunit.connection.wifi.WirelessSelectionPolicy
 import kotlinx.coroutines.withContext
@@ -2080,6 +2084,9 @@ class HomeFragment : Fragment() {
                     } else if (strategy == HelperStrategy.NEARBY_DEVICES) {
                         // Nearby Devices — show live discovery dialog
                         showNearbyDeviceSelector()
+                    } else if (strategy == HelperStrategy.COMMON_WIFI) {
+                        // Common Wifi (NSD) — scan LAN and show popup listing available mobile devices
+                        showCommonWifiMobileDeviceSelector()
                     } else if (AapService.scanningState.value) {
                         ToastUtils.showToast(requireContext(), getString(R.string.already_searching_phone), Toast.LENGTH_SHORT)
                     } else {
@@ -2203,7 +2210,15 @@ class HomeFragment : Fragment() {
         showUsbAccessHintIfNeeded()
 
         val appSettings = App.provide(requireContext()).settings
-        if (requestDriverSelection) {
+        if (requestCommonWifiSelection) {
+            requestCommonWifiSelection = false
+            if (!commManager.isConnected &&
+                appSettings.wifiConnectionMode == WifiLauncherMode.HELPER &&
+                appSettings.helperConnectionStrategy == HelperStrategy.COMMON_WIFI
+            ) {
+                showCommonWifiMobileDeviceSelector()
+            }
+        } else if (requestDriverSelection) {
             requestDriverSelection = false
             if (!ExternalBtTransportPolicy.usesExternalModule(NativeAaHandshakeManager.transportRoute(requireContext()))) {
                 showNativeAaDeviceSelector(autoCountdown = false)
@@ -3174,6 +3189,206 @@ class HomeFragment : Fragment() {
         }
     }
 
+    private fun showCommonWifiMobileDeviceSelector() {
+        if (!isAdded || activeDialog?.isShowing == true) return
+        val ctx = requireContext()
+        val appSettings = App.provide(ctx).settings
+        val lastUsedIp = appSettings.lastConnectionIp
+
+        // Ensure WirelessServer on port 5288 + NSD is armed (without creating Wi-Fi Direct).
+        ContextCompat.startForegroundService(
+            ctx,
+            Intent(ctx, AapService::class.java).apply {
+                action = AapService.ACTION_START_WIRELESS
+            }
+        )
+
+        val dialogView = LayoutInflater.from(ctx).inflate(R.layout.dialog_common_wifi_devices, null)
+        val scanSpinner = dialogView.findViewById<ProgressBar>(R.id.scanSpinner)
+        val scanStatusText = dialogView.findViewById<TextView>(R.id.scanStatusText)
+        val scanProgressBar = dialogView.findViewById<ProgressBar>(R.id.scanProgressBar)
+        val emptyDevicesText = dialogView.findViewById<TextView>(R.id.emptyDevicesText)
+        val deviceListView = dialogView.findViewById<ListView>(R.id.mobileDeviceList)
+
+        val brandPrimary = ContextCompat.getColor(ctx, R.color.brand_primary)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            scanSpinner.indeterminateTintList = ColorStateList.valueOf(brandPrimary)
+            scanProgressBar.progressTintList = ColorStateList.valueOf(brandPrimary)
+        } else {
+            @Suppress("DEPRECATION")
+            scanSpinner.indeterminateDrawable?.setColorFilter(brandPrimary, android.graphics.PorterDuff.Mode.SRC_IN)
+        }
+
+        val dm = resources.displayMetrics
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val maxListHeight = if (isLandscape) {
+            (dm.heightPixels * 0.38).toInt().coerceIn((120 * dm.density).toInt(), (210 * dm.density).toInt())
+        } else {
+            (dm.heightPixels * 0.45).toInt().coerceIn((180 * dm.density).toInt(), (320 * dm.density).toInt())
+        }
+        deviceListView.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            maxListHeight
+        )
+
+        val shownDevices = mutableListOf<NetworkDevice>()
+        var latestRawDevices: List<NetworkDevice> = emptyList()
+        var latestLocalIps: Set<String> = emptySet()
+        var latestGatewayIps: Set<String> = emptySet()
+        var latestIsScanning = true
+        var latestErrorMessage: String? = null
+        var latestNetworkLabel: String? = null
+
+        val listAdapter = object : ArrayAdapter<NetworkDevice>(ctx, R.layout.list_item_common_wifi_device, shownDevices) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = convertView ?: LayoutInflater.from(context).inflate(R.layout.list_item_common_wifi_device, parent, false)
+                val device = getItem(position) ?: return view
+
+                val iconView = view.findViewById<ImageView>(R.id.deviceIcon)
+                val nameView = view.findViewById<TextView>(R.id.deviceName)
+                val subtitleView = view.findViewById<TextView>(R.id.deviceSubtitle)
+                val badgeView = view.findViewById<TextView>(R.id.badgeText)
+
+                iconView.setImageResource(R.drawable.ic_phone)
+                nameView.text = device.deviceName
+                subtitleView.text = CommonWifiDevicePolicy.subtitleFor(device)
+
+                if (lastUsedIp.isNotEmpty() && device.ipAddress == lastUsedIp) {
+                    badgeView.text = context.getString(R.string.driver_device_last_used)
+                    badgeView.visibility = View.VISIBLE
+                    badgeView.setBackgroundResource(R.drawable.bg_setting_single)
+                } else {
+                    badgeView.visibility = View.GONE
+                }
+
+                val isTop = position == 0
+                val isBottom = position == count - 1
+                val bgRes = when {
+                    isTop && isBottom -> R.drawable.bg_setting_single
+                    isTop -> R.drawable.bg_setting_top
+                    isBottom -> R.drawable.bg_setting_bottom
+                    else -> R.drawable.bg_setting_middle
+                }
+                view.setBackgroundResource(bgRes)
+                return view
+            }
+        }
+        deviceListView.adapter = listAdapter
+
+        fun renderDeviceList() {
+            val mobileOnly = CommonWifiDevicePolicy.mobileCandidates(
+                latestRawDevices,
+                lastUsedIp = lastUsedIp,
+                localIps = latestLocalIps,
+                gatewayIps = latestGatewayIps
+            )
+            shownDevices.clear()
+            shownDevices.addAll(mobileOnly)
+            listAdapter.notifyDataSetChanged()
+
+            if (mobileOnly.isEmpty()) {
+                deviceListView.visibility = View.GONE
+                if (!latestIsScanning) {
+                    emptyDevicesText.visibility = View.VISIBLE
+                    emptyDevicesText.text = latestErrorMessage ?: getString(R.string.common_wifi_no_mobile_devices)
+                } else {
+                    emptyDevicesText.visibility = View.GONE
+                }
+            } else {
+                emptyDevicesText.visibility = View.GONE
+                deviceListView.visibility = View.VISIBLE
+            }
+
+            if (!latestIsScanning) {
+                val countLabel = getString(R.string.common_wifi_found_mobile_count, mobileOnly.size)
+                val prefix = latestNetworkLabel?.let { "$it · " }.orEmpty()
+                scanStatusText.text = latestErrorMessage ?: (prefix + countLabel)
+            }
+        }
+
+        val scanner = CommonWifiDeviceScanner(ctx.applicationContext)
+        var scanJob: Job? = null
+
+        val dialog = MaterialAlertDialogBuilder(ctx, R.style.DarkAlertDialog)
+            .setTitle(R.string.common_wifi_mobile_dialog_title)
+            .setView(dialogView)
+            .setNeutralButton(R.string.common_wifi_rescan, null)
+            .setNegativeButton(R.string.cancel) { d, _ ->
+                scanJob?.cancel()
+                d.dismiss()
+            }
+            .setOnDismissListener {
+                scanJob?.cancel()
+                if (activeDialog === it) activeDialog = null
+            }
+            .create()
+
+        fun startNetworkScan() {
+            scanJob?.cancel()
+            latestIsScanning = true
+            latestErrorMessage = null
+            scanSpinner.visibility = View.VISIBLE
+            scanProgressBar.visibility = View.VISIBLE
+            scanProgressBar.progress = 8
+            scanStatusText.text = getString(R.string.common_wifi_scanning_mobile)
+            renderDeviceList()
+
+            scanJob = viewLifecycleOwner.lifecycleScope.launch {
+                scanner.scanNetwork().collect { update ->
+                    latestIsScanning = update.isScanning
+                    latestErrorMessage = update.errorMessage
+                    latestNetworkLabel = update.networkInfo?.let { info ->
+                        latestLocalIps = info.localIps + info.localIp
+                        latestGatewayIps = info.gatewayIps + setOfNotNull(info.gatewayIp)
+                        info.ssid ?: info.localIp
+                    }
+                    if (update.devices.isNotEmpty() || !update.isScanning) {
+                        latestRawDevices = update.devices
+                    }
+                    scanSpinner.visibility = if (update.isScanning) View.VISIBLE else View.GONE
+                    scanProgressBar.visibility = if (update.isScanning) View.VISIBLE else View.GONE
+                    scanProgressBar.progress = (update.progress * 100f).toInt().coerceIn(5, 100)
+                    if (update.isScanning) {
+                        val prefix = latestNetworkLabel?.let { "$it · " }.orEmpty()
+                        scanStatusText.text = prefix + update.phaseMessage
+                    }
+                    renderDeviceList()
+                }
+            }
+        }
+
+        deviceListView.setOnItemClickListener { _, _, position, _ ->
+            val chosen = shownDevices.getOrNull(position) ?: return@setOnItemClickListener
+            AppLog.i("HomeFragment: Selected Common WiFi mobile device: ${chosen.deviceName} (${chosen.ipAddress})")
+            scanJob?.cancel()
+            dialog.dismiss()
+
+            val statusText = getString(R.string.connecting_to_nearby, chosen.deviceName)
+            (requireActivity() as? MainActivity)?.beginAutoConnect(
+                "Common WiFi select ${chosen.deviceName} (${chosen.ipAddress})",
+                MainActivity.ConnectionUiMode.OVERLAY,
+                statusText
+            )
+            val intent = Intent(ctx, AapService::class.java).apply {
+                action = AapService.ACTION_HELPER_COMMON_WIFI_CONNECT
+                putExtra(AapService.EXTRA_TARGET_IP, chosen.ipAddress)
+                putExtra(AapService.EXTRA_DEVICE_NAME, chosen.deviceName)
+            }
+            ContextCompat.startForegroundService(ctx, intent)
+        }
+
+        dialog.setOnShowListener {
+            (activity as? MainActivity)?.dismissSplashImmediately()
+            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
+                startNetworkScan()
+            }
+            startNetworkScan()
+        }
+
+        activeDialog = dialog
+        dialog.show()
+    }
+
     companion object {
         private const val STATE_PENDING_WIDGET_ID = "home_pending_widget_id"
         private const val STATE_PENDING_WIDGET_PAGE = "home_pending_widget_page"
@@ -3182,6 +3397,7 @@ class HomeFragment : Fragment() {
         private var hasCheckedNativeDriverSelection = false
         var forceSelfModeLaunch = false
         var requestDriverSelection = false
+        var requestCommonWifiSelection = false
         private const val MINUTE_MS = 60_000L
         private const val CLOCK_SLACK_MS = 250L
         private const val SPEED_INTERVAL_MS = 1_000L

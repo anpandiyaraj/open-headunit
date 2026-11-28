@@ -60,6 +60,27 @@ class WirelessServer(
     @Volatile var isListening = false
         private set
 
+    @Volatile private var preferredClientIp: String? = null
+    @Volatile private var preferredClientUntilMs: Long = 0L
+
+    fun preferClient(ip: String?, windowMs: Long = 35_000L) {
+        preferredClientIp = normalizePeerIp(ip)
+        preferredClientUntilMs = if (preferredClientIp != null) {
+            SystemClock.elapsedRealtime() + windowMs
+        } else {
+            0L
+        }
+    }
+
+    private fun normalizePeerIp(raw: String?): String? {
+        val trimmed = raw?.trim()?.removePrefix("/")?.takeIf { it.isNotEmpty() } ?: return null
+        return if (trimmed.startsWith("::ffff:", ignoreCase = true)) {
+            trimmed.substring(7)
+        } else {
+            trimmed
+        }
+    }
+
 
     /**
      * Whether the coroutine that owns the bind is still running.
@@ -140,8 +161,18 @@ class WirelessServer(
                             withContext(Dispatchers.IO) {
                                 try { clientSocket.close() } catch (e: Exception) { AppLog.d("WirelessServer: Error closing cooldown client socket", e) }
                             }
+                        } else if (preferredClientIp != null &&
+                            SystemClock.elapsedRealtime() < preferredClientUntilMs &&
+                            normalizePeerIp(clientSocket.inetAddress?.hostAddress) != preferredClientIp
+                        ) {
+                            AppLog.w("WirelessServer: Ignoring connection from ${clientSocket.inetAddress?.hostAddress}; waiting for selected mobile device $preferredClientIp")
+                            withContext(Dispatchers.IO) {
+                                try { clientSocket.close() } catch (e: Exception) { AppLog.d("WirelessServer: Error closing non-selected client socket", e) }
+                            }
                         } else {
                             AppLog.i("WirelessServer: Accepted client connection from ${clientSocket.inetAddress}. Passing to CommManager...")
+                            preferredClientIp = null
+                            preferredClientUntilMs = 0L
                             service.userExitedAA = false // Clear flag on genuine new connection
                             commManager.connect(clientSocket)
                         }
@@ -179,24 +210,49 @@ class WirelessServer(
         }
     }
 
+    @Synchronized
+    fun refreshNsdRegistration() {
+        if (!registerNsd) return
+        if (nsdManager == null) {
+            nsdManager = service.getSystemService(Context.NSD_SERVICE) as? NsdManager
+        }
+        if (nsdManager == null) return
+        AppLog.i("WirelessServer: Refreshing _aawireless._tcp NSD registration on port 5288")
+        unregisterNsd()
+        registerNsd()
+    }
+
+    @Synchronized
     private fun registerNsd() {
+        if (registrationListener != null) return
         val serviceInfo = NsdServiceInfo().apply {
             serviceName = "AAWireless"
             serviceType = "_aawireless._tcp"
             port = 5288
         }
-        registrationListener = object : NsdManager.RegistrationListener {
+        val listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(info: NsdServiceInfo) = AppLog.i("NSD Registered: ${info.serviceName}")
             override fun onRegistrationFailed(info: NsdServiceInfo, err: Int) = AppLog.e("NSD Reg Fail: $err")
             override fun onServiceUnregistered(info: NsdServiceInfo) = AppLog.i("NSD Unregistered")
             override fun onUnregistrationFailed(info: NsdServiceInfo, err: Int) = AppLog.e("NSD Unreg Fail: $err")
         }
-        nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
+        try {
+            nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, listener)
+            registrationListener = listener
+        } catch (e: Exception) {
+            AppLog.w("WirelessServer: Failed to register NSD service: ${e.message}")
+        }
     }
 
+    @Synchronized
     private fun unregisterNsd() {
-        registrationListener?.let { nsdManager?.unregisterService(it) }
+        val listener = registrationListener ?: return
         registrationListener = null
+        try {
+            nsdManager?.unregisterService(listener)
+        } catch (e: Exception) {
+            AppLog.d("WirelessServer: Error unregistering NSD service: ${e.message}")
+        }
     }
 
     fun stopServer() {

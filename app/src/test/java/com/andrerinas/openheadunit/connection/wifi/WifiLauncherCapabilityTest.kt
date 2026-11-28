@@ -72,4 +72,18 @@ class WifiLauncherCapabilityTest {
                 assertFalse("Helper/$strategy has no network to advertise on", launcher.hasLocalDiscovery())
         }
     }
+
+    @Test
+    fun `common wifi helper never uses wifi direct and never auto-starts blind subnet sweeps`() {
+        val commonWifi = WifiLauncherMock.create(
+            WifiLauncherMode.HELPER,
+            helperStrategy = HelperStrategy.COMMON_WIFI
+        )
+        assertFalse("Common WiFi (NSD) must never create Wi-Fi Direct", commonWifi.hasWifiDirect())
+        assertTrue("Common WiFi (NSD) still registers _aawireless._tcp NSD", commonWifi.hasLocalDiscovery())
+        assertFalse(
+            "Common WiFi (NSD) waits for user mobile device selection instead of blind subnet sweeps",
+            commonWifi.autoStartsLocalDiscovery()
+        )
+    }
 }

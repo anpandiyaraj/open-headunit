@@ -787,6 +787,13 @@ class SettingsFragment : Fragment() {
         if (WirelessRearmPolicy.requiresRearm(wirelessConfigBefore, wirelessRearmConfig())) {
             AapService.applyWirelessSettings(requireContext(),
                 startWireless = settings.wifiConnectionMode != WifiLauncherMode.MANUAL && settings.showsWifi())
+            if (settings.wifiConnectionMode == WifiLauncherMode.HELPER &&
+                settings.helperConnectionStrategy == HelperStrategy.COMMON_WIFI &&
+                (wirelessConfigBefore.wifiConnectionMode != WifiLauncherMode.HELPER ||
+                    wirelessConfigBefore.helperConnectionStrategy != HelperStrategy.COMMON_WIFI)
+            ) {
+                HomeFragment.requestCommonWifiSelection = true
+            }
         }
 
         if (requiresServiceRestart) {

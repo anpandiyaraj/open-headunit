@@ -54,13 +54,23 @@ class WifiLauncherHelper : WifiLauncher {
         return strategy == HelperStrategy.COMMON_WIFI || strategy == HelperStrategy.PHONE_HOTSPOT || strategy == HelperStrategy.HEADUNIT_HOTSPOT
     }
 
+    override fun autoStartsLocalDiscovery(): Boolean {
+        return strategy == HelperStrategy.PHONE_HOTSPOT || strategy == HelperStrategy.HEADUNIT_HOTSPOT
+    }
+
 
     override fun start(noInfoToasts: Boolean) {
         AppLog.i("WifiLauncher: Using strategy $strategy.")
-        ConnectionStageTracker.report(ConnectionStage.SEARCHING)
+        ConnectionStageTracker.report(
+            if (strategy == HelperStrategy.COMMON_WIFI) ConnectionStage.WAITING_FOR_PHONE
+            else ConnectionStage.SEARCHING
+        )
 
         when (strategy) {
-            HelperStrategy.COMMON_WIFI -> { /* #startDiscovery(oneShot = false) handled by SharedServices */ }
+            HelperStrategy.COMMON_WIFI -> {
+                // WirelessServer on 5288 + _aawireless._tcp NSD are started by SharedServices;
+                // no Wi-Fi Direct group is created and mobile selection triggers the target phone.
+            }
             HelperStrategy.WIFI_DIRECT -> {
                 val wifiManager = service.getSystemService(Context.WIFI_SERVICE) as WifiManager
                 val wifiDirect = manager.sharedServices.wifiDirectManager!!
@@ -109,6 +119,9 @@ class WifiLauncherHelper : WifiLauncher {
                 if (wifiManager.isWifiEnabled) {
                     wifiDirect?.makeVisible()
                 }
+            }
+            HelperStrategy.COMMON_WIFI -> {
+                // Common WiFi connects to the user-selected mobile device rather than blind subnet sweeps.
             }
             else -> {
                 if (service.discoveryDormantAfterWifiLoss) {

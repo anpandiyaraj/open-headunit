@@ -1073,8 +1073,9 @@ class MainActivity : BaseActivity() {
 
         lifecycleScope.launch {
             AapService.wifiDirectName.collectLatest { name ->
-                val isHelperMode = settings.wifiConnectionMode == WifiLauncherMode.HELPER
-                if (isHelperMode && name != null) {
+                val isHelperWifiDirect = settings.wifiConnectionMode == WifiLauncherMode.HELPER &&
+                    settings.helperConnectionStrategy == com.andrerinas.openheadunit.connection.wifi.modes.helper.HelperStrategy.WIFI_DIRECT
+                if (isHelperWifiDirect && name != null) {
                     tvInfo.text = "WiFi Direct: $name"
                     tvInfo.visibility = View.VISIBLE
                 } else {

@@ -59,7 +59,7 @@ class WifiLauncherSharedServices(val service: AapService) {
             P2pTeardownTracker.releaseKeptGroup()
         }
         if (active.hasWirelessServer()) startWirelessServer(active) else stopWirelessServer()
-        if (active.hasLocalDiscovery()) startLocalDiscovery(oneShot = false) else stopLocalDiscovery()
+        if (active.autoStartsLocalDiscovery()) startLocalDiscovery(oneShot = false) else stopLocalDiscovery()
     }
 
     fun stopAll(keepGroup: Boolean = false) {
@@ -107,6 +107,9 @@ class WifiLauncherSharedServices(val service: AapService) {
     private fun stopWifiDirect(keepGroup: Boolean = false) {
         wifiDirectManager?.stop(keepGroup)
         wifiDirectManager = null
+        if (!keepGroup) {
+            AapService.wifiDirectName.value = null
+        }
         // The teardown itself is left to finish - the access point should stay down for whatever
         // comes next - but nothing may wait on a job belonging to a mode that has gone.
         hotspotTeardown = null
